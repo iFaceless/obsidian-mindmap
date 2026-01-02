@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-mindmap",
+	"name": "ObMind",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Render markdown lists as interactive mind maps with expand/collapse functionality",
+	"author": "0xE8551CCB",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
