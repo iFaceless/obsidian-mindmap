@@ -35,7 +35,7 @@ export default class MindMapPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.registerMarkdownCodeBlockProcessor('obmind', (source, el, ctx) => {
+		this.registerMarkdownCodeBlockProcessor('mindmap', (source, el, ctx) => {
 			const mindMap = new MindMapRenderer(source, el, ctx, this.settings, this.app);
 			ctx.addChild(mindMap);
 		});
@@ -103,6 +103,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 	private settings: MindMapSettings;
 	private app: App;
 	private wrapper: HTMLElement | null = null;
+	private notePanel: HTMLElement | null = null; // 右侧备注面板
 	private renderMode: RenderMode;
 
 	// Zoom and pan state
@@ -132,9 +133,19 @@ class MindMapRenderer extends MarkdownRenderChild {
 		const lines = text.split('\n');
 		if (lines.length === 0) return null;
 
-		// 检测是否是纯 # 标题模式（通过检查是否有 - 列表项）
+		// 检测是否有二级及以上标题（##, ### 等）
+		const hasMultiLevelHeadings = lines.some(line => /^\s*#{2,}\s/.test(line));
+		
+		// 检测是否有列表项
 		const hasListItems = lines.some(line => /^\s*[-*]\s/.test(line));
+		
+		// 检测是否有 # 标题
 		const hasHeadings = lines.some(line => /^\s*#+\s/.test(line));
+
+		// 如果有二级及以上标题，使用纯标题模式（即使有列表项）
+		if (hasMultiLevelHeadings) {
+			return this.parseHeadingsMode(lines);
+		}
 
 		// 如果只有 # 标题，没有列表项，则使用纯标题模式
 		if (hasHeadings && !hasListItems) {
@@ -310,6 +321,25 @@ class MindMapRenderer extends MarkdownRenderChild {
 		wrapper.style.transition = 'all 0.3s ease';
 		this.wrapper = wrapper;
 
+		// Create right sidebar for notes
+		const notePanel = wrapper.createDiv();
+		notePanel.style.cssText = `
+			position: absolute;
+			top: 0;
+			right: 0;
+			width: 300px;
+			height: 100%;
+			background: #fffef0;
+			border-left: 1px solid #e6ddb3;
+			box-shadow: -2px 0 12px rgba(0,0,0,0.08);
+			transform: translateX(100%);
+			transition: transform 0.3s ease;
+			z-index: 1000;
+			overflow: auto;
+			padding: 16px;
+		`;
+		this.notePanel = notePanel;
+
 		// Create control buttons
 		this.createControls(wrapper);
 
@@ -344,6 +374,13 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 		// Add zoom and pan event listeners
 		this.setupZoomAndPan(svg);
+
+		// 点击画布其它区域关闭备注面板
+		svg.addEventListener('click', (e: MouseEvent) => {
+			if (e.target === svg || (e.target as Element).tagName === 'svg') {
+				this.hideNotePanel();
+			}
+		});
 	}
 
 	private createControls(wrapper: HTMLElement) {
@@ -580,6 +617,12 @@ class MindMapRenderer extends MarkdownRenderChild {
 		}
 	}
 
+	private hideNotePanel() {
+		if (this.notePanel) {
+			this.notePanel.style.transform = 'translateX(100%)';
+		}
+	}
+
 	private expandAll() {
 		if (this.root) {
 			this.setCollapsedState(this.root, false);
@@ -751,85 +794,38 @@ class MindMapRenderer extends MarkdownRenderChild {
 			noteIcon.style.opacity = '0.6';
 			noteIcon.style.transition = 'opacity 0.15s';
 
-			// 创建 tooltip 容器（Apple 备注风格浅黄色背景）
-			const tooltip = this.container.createDiv();
-			tooltip.style.cssText = `
-				position: fixed;
-				background: #fffef0;
-				border: 1px solid #e6ddb3;
-				border-radius: 6px;
-				padding: 12px 16px;
-				max-width: 400px;
-				max-height: 300px;
-				overflow: auto;
-				box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-				z-index: 10000;
-				display: none;
-				font-size: 13px;
-				line-height: 1.6;
-				color: #5c5640;
-			`;
-
-			// 使用 Obsidian 的 MarkdownRenderer 渲染备注内容
-			const noteContent = tooltip.createDiv();
-			MarkdownRenderer.render(
-				this.app,
-				node.note,
-				noteContent,
-				'',
-				this
-			);
-
-			// 鼠标悬停显示 tooltip（在图标正下方）
-			const showTooltip = (e: MouseEvent) => {
-				const iconEl = e.target as Element;
-				const rect = iconEl.getBoundingClientRect();
+			// 点击显示备注在右侧面板
+			const showNote = (e: MouseEvent) => {
+				e.stopPropagation();
+				
+				if (!this.notePanel) return;
 				
 				// 图标高亮
 				noteIcon.style.opacity = '1';
 				
-				// 先显示 tooltip 以获取其尺寸
-				tooltip.style.display = 'block';
-				tooltip.style.visibility = 'hidden';
+				// 清空并填充备注内容
+				this.notePanel.innerHTML = '';
 				
-				requestAnimationFrame(() => {
-					const tooltipRect = tooltip.getBoundingClientRect();
-					
-					// 默认在图标正下方
-					let left = rect.left;
-					let top = rect.bottom + 6;
-					
-					// 检查右侧边界
-					if (left + tooltipRect.width > window.innerWidth - 10) {
-						left = window.innerWidth - tooltipRect.width - 10;
-					}
-					
-					// 检查下方边界，如果不够则显示在上方
-					if (top + tooltipRect.height > window.innerHeight - 10) {
-						top = rect.top - tooltipRect.height - 6;
-					}
-					
-					// 确保不超出左侧
-					if (left < 10) left = 10;
-					
-					tooltip.style.left = `${left}px`;
-					tooltip.style.top = `${top}px`;
-					tooltip.style.visibility = 'visible';
-				});
+				// 添加标题
+				const title = this.notePanel.createEl('h3');
+				title.textContent = node.text;
+				title.style.cssText = `
+					margin: 0 0 12px 0;
+					font-size: 16px;
+					font-weight: 600;
+					color: #333;
+				`;
+
+				// 添加备注内容
+				const noteContent = this.notePanel.createDiv();
+				noteContent.style.cssText = 'font-size: 13px; line-height: 1.6; color: #5c5640;';
+				MarkdownRenderer.render(this.app, node.note, noteContent, '', this);
+
+				// 显示面板
+				this.notePanel.style.transform = 'translateX(0)';
 			};
 
-			const hideTooltip = () => {
-				tooltip.style.display = 'none';
-				noteIcon.style.opacity = '0.6';
-			};
-
-			noteIcon.addEventListener('mouseenter', showTooltip);
-			noteIcon.addEventListener('mouseleave', hideTooltip);
-			tooltip.addEventListener('mouseenter', () => {
-				tooltip.style.display = 'block';
-				noteIcon.style.opacity = '1';
-			});
-			tooltip.addEventListener('mouseleave', hideTooltip);
+			noteIcon.addEventListener('click', showNote);
 		}
 
 		// 非叶子节点：绘制空心圆
@@ -1011,7 +1007,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 		// 根节点备注图标
 		if (root.note) {
-			this.addNoteIcon(nodesGroup, startX + textWidth + 2, startY, root.note, 14, 'white');
+			this.addNoteIcon(nodesGroup, startX + textWidth + 2, startY, root.note, 14, 'white', root.text);
 		}
 
 		// 全部子节点向右展开
@@ -1128,7 +1124,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 		// 根节点备注图标
 		if (root.note) {
-			this.addNoteIcon(nodesGroup, rootX + textWidth + 2, centerY, root.note, 14, 'white');
+			this.addNoteIcon(nodesGroup, rootX + textWidth + 2, centerY, root.note, 14, 'white', root.text);
 		}
 
 		if (!root.collapsed && root.children.length > 0) {
@@ -1214,7 +1210,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 			// 备注图标
 			if (child.note) {
-				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor);
+				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor, child.text);
 			}
 
 			// 递归渲染子节点
@@ -1289,7 +1285,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 			// 备注图标
 			if (child.note) {
-				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor);
+				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor, child.text);
 			}
 
 			// 递归渲染子节点（继续向左展开）
@@ -1323,7 +1319,8 @@ class MindMapRenderer extends MarkdownRenderChild {
 		y: number,
 		note: string,
 		fontSize: number,
-		color: string
+		color: string,
+		nodeText: string
 	) {
 		const noteIcon = group.createSvg('text');
 		noteIcon.setAttribute('x', x.toString());
@@ -1334,54 +1331,36 @@ class MindMapRenderer extends MarkdownRenderChild {
 		noteIcon.style.cursor = 'pointer';
 		noteIcon.style.opacity = '0.7';
 
-		// 创建 tooltip
-		const tooltip = this.container.createDiv();
-		tooltip.style.cssText = `
-			position: fixed;
-			background: #fffef0;
-			border: 1px solid #e6ddb3;
-			padding: 8px 12px;
-			line-height: 1.4;
-			border-radius: 6px;
-			box-shadow: 0 3px 12px rgba(0,0,0,0.15);
-			z-index: 10000;
-			max-width: 350px;
-			font-size: 13px;
-			display: none;
-		`;
-
-		const contentDiv = tooltip.createDiv();
-		MarkdownRenderer.render(this.app, note, contentDiv, '', this);
-
-		const showTooltip = (e: MouseEvent) => {
-			const rect = (e.target as Element).getBoundingClientRect();
+		// 点击显示备注在右侧面板
+		const showNote = (e: MouseEvent) => {
+			e.stopPropagation();
+			
+			if (!this.notePanel) return;
+			
+			// 图标高亮
 			noteIcon.style.opacity = '1';
-			tooltip.style.display = 'block';
-			tooltip.style.left = `${rect.left}px`;
-			tooltip.style.top = `${rect.bottom + 4}px`;
+			
+			// 清空并填充备注内容
+							this.notePanel.innerHTML = '';
+							
+							// 添加标题
+							const title = this.notePanel.createEl('h3');
+							title.textContent = nodeText;
+							title.style.cssText = `
+								margin: 0 0 12px 0;
+								font-size: 16px;
+								font-weight: 600;
+								color: #333;
+							`;
+			// 添加备注内容
+			const noteContent = this.notePanel.createDiv();
+			noteContent.style.cssText = 'font-size: 13px; line-height: 1.6; color: #5c5640;';
+			MarkdownRenderer.render(this.app, note, noteContent, '', this);
 
-			requestAnimationFrame(() => {
-				const tooltipRect = tooltip.getBoundingClientRect();
-				if (tooltipRect.right > window.innerWidth - 10) {
-					tooltip.style.left = `${window.innerWidth - tooltipRect.width - 10}px`;
-				}
-				if (tooltipRect.bottom > window.innerHeight - 10) {
-					tooltip.style.top = `${rect.top - tooltipRect.height - 4}px`;
-				}
-			});
+			// 显示面板
+			this.notePanel.style.transform = 'translateX(0)';
 		};
 
-		const hideTooltip = () => {
-			tooltip.style.display = 'none';
-			noteIcon.style.opacity = '0.7';
-		};
-
-		noteIcon.addEventListener('mouseenter', showTooltip);
-		noteIcon.addEventListener('mouseleave', hideTooltip);
-		tooltip.addEventListener('mouseenter', () => {
-			tooltip.style.display = 'block';
-			noteIcon.style.opacity = '1';
-		});
-		tooltip.addEventListener('mouseleave', hideTooltip);
+		noteIcon.addEventListener('click', showNote);
 	}
 }
