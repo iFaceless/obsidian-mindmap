@@ -1,10 +1,11 @@
-import { Plugin, MarkdownPostProcessorContext, MarkdownRenderChild, PluginSettingTab, App, Setting } from 'obsidian';
+import { Plugin, MarkdownPostProcessorContext, MarkdownRenderChild, PluginSettingTab, App, Setting, MarkdownRenderer } from 'obsidian';
 
 interface MindMapNode {
 	id: string;
 	text: string;
 	children: MindMapNode[];
 	collapsed: boolean;
+	note?: string; // 备注内容（Markdown格式）
 }
 
 interface MindMapSettings {
@@ -25,7 +26,7 @@ export default class MindMapPlugin extends Plugin {
 		await this.loadSettings();
 
 		this.registerMarkdownCodeBlockProcessor('obmind', (source, el, ctx) => {
-			const mindMap = new MindMapRenderer(source, el, ctx, this.settings);
+			const mindMap = new MindMapRenderer(source, el, ctx, this.settings, this.app);
 			ctx.addChild(mindMap);
 		});
 
@@ -79,6 +80,9 @@ class MindMapRenderer extends MarkdownRenderChild {
 	private container: HTMLElement;
 	private root: MindMapNode | null = null;
 	private settings: MindMapSettings;
+	private app: App;
+	private wrapper: HTMLElement | null = null;
+	private isFullscreen: boolean = false;
 
 	// Zoom and pan state
 	private scale: number = 1;
@@ -90,11 +94,12 @@ class MindMapRenderer extends MarkdownRenderChild {
 	private svg: SVGSVGElement | null = null;
 	private mainGroup: SVGGElement | null = null;
 
-	constructor(source: string, container: HTMLElement, ctx: MarkdownPostProcessorContext, settings: MindMapSettings) {
+	constructor(source: string, container: HTMLElement, ctx: MarkdownPostProcessorContext, settings: MindMapSettings, app: App) {
 		super(container);
 		this.source = source;
 		this.container = container;
 		this.settings = settings;
+		this.app = app;
 	}
 
 	onload() {
@@ -102,49 +107,166 @@ class MindMapRenderer extends MarkdownRenderChild {
 	}
 
 	private parseMarkdownList(text: string): MindMapNode | null {
-		const lines = text.split('\n').filter(line => line.trim());
+		const lines = text.split('\n');
 		if (lines.length === 0) return null;
+
+		// 检测是否是纯 # 标题模式（通过检查是否有 - 列表项）
+		const hasListItems = lines.some(line => /^\s*[-*]\s/.test(line));
+		const hasHeadings = lines.some(line => /^\s*#+\s/.test(line));
+
+		// 如果只有 # 标题，没有列表项，则使用纯标题模式
+		if (hasHeadings && !hasListItems) {
+			return this.parseHeadingsMode(lines);
+		}
+
+		// 否则使用列表模式（支持 # 作为根标题）
+		return this.parseListMode(lines);
+	}
+
+	// 纯 # 标题模式解析
+	private parseHeadingsMode(lines: string[]): MindMapNode | null {
+		let root: MindMapNode | null = null;
+		const stack: { node: MindMapNode; level: number }[] = [];
+		let currentNode: MindMapNode | null = null;
+		let noteLines: string[] = [];
+
+		const flushNote = () => {
+			if (currentNode && noteLines.length > 0) {
+				currentNode.note = noteLines.join('\n').trim();
+				noteLines = [];
+			}
+		};
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+
+			// 检查是否是 # 标题
+			const headingMatch = trimmed.match(/^(#+)\s*(.*)$/);
+			
+			if (headingMatch) {
+				// 先保存上一个节点的备注
+				flushNote();
+
+				const level = headingMatch[1].length; // # 的数量代表层级
+				const nodeText = headingMatch[2].trim();
+
+				const nodeId = `node-${Math.random().toString(36).substr(2, 9)}`;
+				const newNode: MindMapNode = {
+					id: nodeId,
+					text: nodeText,
+					children: [],
+					collapsed: collapsedStateMap.get(nodeId) || false
+				};
+
+				// 第一个 # 作为根节点
+				if (!root) {
+					root = newNode;
+					stack.push({ node: newNode, level });
+					currentNode = newNode;
+					continue;
+				}
+
+				// 找到正确的父节点：弹出所有层级 >= 当前层级的节点
+				while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+					stack.pop();
+				}
+
+				if (stack.length > 0) {
+					const parent = stack[stack.length - 1].node;
+					parent.children.push(newNode);
+				} else {
+					// 如果栈为空，说明这是一个新的顶层节点（不应该发生）
+					root.children.push(newNode);
+				}
+				stack.push({ node: newNode, level });
+				currentNode = newNode;
+			} else if (trimmed) {
+				// 非标题行，作为当前节点的备注内容
+				noteLines.push(trimmed);
+			}
+		}
+
+		// 保存最后一个节点的备注
+		flushNote();
+
+		return root;
+	}
+
+	// 列表模式解析（支持 # 作为根标题）
+	private parseListMode(lines: string[]): MindMapNode | null {
+		// 检查是否有 # 标题作为中心标题
+		let rootTitle = 'Root';
+		let startIndex = 0;
+		for (let i = 0; i < lines.length; i++) {
+			const trimmed = lines[i].trim();
+			if (!trimmed) continue;
+			// 检查是否是 # 标题
+			if (trimmed.startsWith('#')) {
+				rootTitle = trimmed.replace(/^#+\s*/, '').trim();
+				startIndex = i + 1;
+				break;
+			}
+			// 如果第一个非空行不是 # 开头，则不继续查找
+			break;
+		}
 
 		const root: MindMapNode = {
 			id: 'root',
-			text: 'Root',
+			text: rootTitle,
 			children: [],
 			collapsed: false
 		};
 
-		const stack: { node: MindMapNode; level: number }[] = [{ node: root, level: -1 }];
+		const stack: { node: MindMapNode; level: number; indent: number }[] = [{ node: root, level: -1, indent: -1 }];
 
-		for (const line of lines) {
+		// 计算缩进宽度（Tab算作4个空格）
+		const getIndentWidth = (line: string): number => {
+			let width = 0;
+			for (const char of line) {
+				if (char === ' ') {
+					width += 1;
+				} else if (char === '\t') {
+					width += 4; // Tab算作4个空格
+				} else {
+					break;
+				}
+			}
+			return width;
+		};
+
+		for (let i = startIndex; i < lines.length; i++) {
+			const line = lines[i];
 			const trimmed = line.trim();
 			if (!trimmed) continue;
+			// 跳过 # 标题行
+			if (trimmed.startsWith('#')) continue;
 
-			// 计算缩进级别
-			const leadingSpaces = line.search(/\S|$/);
-			const level = Math.floor(leadingSpaces / 2); // 假设每级缩进2个空格
+			// 计算缩进宽度
+			const indent = getIndentWidth(line);
 
 			// 移除列表标记（- 或 *）
-			const text = trimmed.replace(/^[-*]\s*/, '').trim();
+			const nodeText = trimmed.replace(/^[-*]\s*/, '').trim();
 
 			const nodeId = `node-${Math.random().toString(36).substr(2, 9)}`;
 			const newNode: MindMapNode = {
 				id: nodeId,
-				text: text,
+				text: nodeText,
 				children: [],
 				collapsed: collapsedStateMap.get(nodeId) || false
 			};
 
-			// 找到正确的父节点
-			while (stack.length > 1 && stack[stack.length - 1].level >= level) {
+			// 找到正确的父节点：弹出所有缩进 >= 当前缩进的节点
+			while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
 				stack.pop();
 			}
 
 			const parent = stack[stack.length - 1].node;
 			parent.children.push(newNode);
-			stack.push({ node: newNode, level });
+			stack.push({ node: newNode, level: stack.length - 1, indent });
 		}
 
-		// 如果只有一个顶层节点，将其作为根节点
-		if (root.children.length === 1) {
+		// 如果只有一个顶层节点且没有自定义标题，将其作为根节点
+		if (root.children.length === 1 && rootTitle === 'Root') {
 			return root.children[0];
 		}
 
@@ -163,6 +285,8 @@ class MindMapRenderer extends MarkdownRenderChild {
 		wrapper.style.position = 'relative';
 		wrapper.style.width = '100%';
 		wrapper.style.height = '600px';
+		wrapper.style.transition = 'all 0.3s ease';
+		this.wrapper = wrapper;
 
 		// Create control buttons
 		this.createControls(wrapper);
@@ -242,6 +366,17 @@ class MindMapRenderer extends MarkdownRenderChild {
 		collapseAllBtn.title = 'Collapse All';
 		this.styleButton(collapseAllBtn);
 		collapseAllBtn.addEventListener('click', () => this.collapseAll());
+
+		// Separator 2
+		const separator2 = controls.createSpan();
+		separator2.style.cssText = 'width: 1px; background: #ddd; margin: 0 5px;';
+
+		// Fullscreen button
+		const fullscreenBtn = controls.createEl('button');
+		fullscreenBtn.innerHTML = '&#x26F6;'; // ⛶ 全屏图标
+		fullscreenBtn.title = 'Toggle Fullscreen';
+		this.styleButton(fullscreenBtn);
+		fullscreenBtn.addEventListener('click', () => this.toggleFullscreen(fullscreenBtn));
 	}
 
 	private styleButton(btn: HTMLButtonElement) {
@@ -344,6 +479,43 @@ class MindMapRenderer extends MarkdownRenderChild {
 		if (this.root) {
 			this.setCollapsedState(this.root, true);
 			this.refresh();
+		}
+	}
+
+	private toggleFullscreen(btn: HTMLButtonElement) {
+		if (!this.wrapper || !this.svg) return;
+		
+		this.isFullscreen = !this.isFullscreen;
+		
+		if (this.isFullscreen) {
+			this.wrapper.style.cssText = `
+				position: fixed;
+				top: 0;
+				left: 0;
+				width: 100vw;
+				height: 100vh;
+				z-index: 9999;
+				background: white;
+			`;
+			this.svg.style.width = '100%';
+			this.svg.style.height = '100%';
+			btn.innerHTML = '&#x2716;'; // ✖ 关闭图标
+			btn.title = 'Exit Fullscreen';
+		} else {
+			this.wrapper.style.cssText = `
+				position: relative;
+				width: 100%;
+				height: 600px;
+			`;
+			this.svg.style.width = '100%';
+			this.svg.style.height = '100%';
+			btn.innerHTML = '&#x26F6;'; // ⛶ 全屏图标
+			btn.title = 'Toggle Fullscreen';
+		}
+		
+		// 重新居中
+		if (this.mainGroup && this.svg) {
+			setTimeout(() => this.centerTree(this.mainGroup!, this.svg!), 100);
 		}
 	}
 
@@ -487,6 +659,107 @@ class MindMapRenderer extends MarkdownRenderChild {
 		};
 
 		text.addEventListener('click', toggleNode);
+
+		// 如果有备注，显示备注图标
+		if (node.note) {
+			const noteIconX = textX + textWidth - 10; // 紧跟文字后面
+			const noteIconY = textY; // 与文字水平居中
+			const iconSize = fontSize;
+
+			// 备注图标（使用 emoji）
+			const noteIcon = nodeGroup.createSvg('text');
+			noteIcon.setAttribute('x', noteIconX.toString());
+			noteIcon.setAttribute('y', noteIconY.toString());
+			noteIcon.setAttribute('font-size', iconSize.toString());
+			noteIcon.textContent = '📝';
+			noteIcon.style.cursor = 'pointer';
+			noteIcon.style.opacity = '0.6';
+			noteIcon.style.transition = 'opacity 0.15s';
+
+			// 创建 tooltip 容器（添加到 wrapper 而不是 container）
+			const tooltip = (this.wrapper || this.container).createDiv();
+			tooltip.style.cssText = `
+				position: fixed;
+				background: #fffef0;
+				border: 1px solid #e6ddb3;
+				border-radius: 6px;
+				padding: 8px 12px;
+				max-width: 400px;
+				max-height: 300px;
+				overflow: auto;
+				box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+				z-index: 10000;
+				display: none;
+				font-size: 13px;
+				line-height: 1.4;
+				color: #5c5640;
+			`;
+
+			// 使用 Obsidian 的 MarkdownRenderer 渲染备注内容
+			const noteContent = tooltip.createDiv();
+			noteContent.style.cssText = 'margin: 0; padding: 0;';
+			// 清除内部段落的 margin
+			noteContent.addClass('mindmap-note-content');
+			MarkdownRenderer.render(
+				this.app,
+				node.note,
+				noteContent,
+				'',
+				this
+			);
+
+			// 添加样式清除内部 margin
+			const style = document.createElement('style');
+			style.textContent = '.mindmap-note-content p { margin: 0 0 0.3em 0; } .mindmap-note-content p:last-child { margin: 0; }';
+			tooltip.prepend(style);
+
+			// 鼠标悬停显示 tooltip（在图标正下方）
+			const showTooltip = (e: MouseEvent) => {
+				const iconEl = e.target as Element;
+				const rect = iconEl.getBoundingClientRect();
+				
+				// 图标高亮
+				noteIcon.style.opacity = '1';
+				
+				// 直接在图标下方显示
+				tooltip.style.display = 'block';
+				tooltip.style.left = `${rect.left}px`;
+				tooltip.style.top = `${rect.bottom + 4}px`;
+				
+				// 稍后调整位置确保不超出视窗
+				requestAnimationFrame(() => {
+					const tooltipRect = tooltip.getBoundingClientRect();
+					
+					// 检查右侧边界
+					if (tooltipRect.right > window.innerWidth - 10) {
+						tooltip.style.left = `${window.innerWidth - tooltipRect.width - 10}px`;
+					}
+					
+					// 检查下方边界
+					if (tooltipRect.bottom > window.innerHeight - 10) {
+						tooltip.style.top = `${rect.top - tooltipRect.height - 4}px`;
+					}
+					
+					// 确保不超出左侧
+					if (parseFloat(tooltip.style.left) < 10) {
+						tooltip.style.left = '10px';
+					}
+				});
+			};
+
+			const hideTooltip = () => {
+				tooltip.style.display = 'none';
+				noteIcon.style.opacity = '0.6';
+			};
+
+			noteIcon.addEventListener('mouseenter', showTooltip);
+			noteIcon.addEventListener('mouseleave', hideTooltip);
+			tooltip.addEventListener('mouseenter', () => {
+				tooltip.style.display = 'block';
+				noteIcon.style.opacity = '1';
+			});
+			tooltip.addEventListener('mouseleave', hideTooltip);
+		}
 
 		// 非叶子节点：绘制空心圆
 		if (!isLeaf || (node.children.length > 0 && node.collapsed)) {
