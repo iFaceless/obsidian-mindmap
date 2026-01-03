@@ -618,7 +618,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 		const nodeRadius = 6;
 		const fontSize = Math.max(11, 13 - depth * 0.5);
 		const fontWeight = depth === 0 ? '600' : 'normal';
-		const textColor = '#605CE5';
+		const textColor = '#000000';
 
 		// 文字背景（白色矩形遮挡连线）
 		const textBg = nodeGroup.createSvg('rect');
@@ -994,7 +994,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const text = nodesGroup.createSvg('text');
 			text.setAttribute('x', (nodeX + textWidth / 2).toString());
 			text.setAttribute('y', (childCenterY + fontSize / 3).toString());
-			text.setAttribute('fill', lineColor);
+			text.setAttribute('fill', '#000000');
 			text.setAttribute('font-size', fontSize.toString());
 			text.setAttribute('text-anchor', 'middle');
 			text.textContent = child.text;
@@ -1126,7 +1126,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const text = nodesGroup.createSvg('text');
 			text.setAttribute('x', (nodeX + textWidth / 2).toString());
 			text.setAttribute('y', (childCenterY + fontSize / 3).toString());
-			text.setAttribute('fill', lineColor);
+			text.setAttribute('fill', '#000000');
 			text.setAttribute('font-size', fontSize.toString());
 			text.setAttribute('text-anchor', 'middle');
 			text.textContent = child.text;
@@ -1201,7 +1201,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const text = nodesGroup.createSvg('text');
 			text.setAttribute('x', (nodeX + textWidth / 2).toString());
 			text.setAttribute('y', (childCenterY + fontSize / 3).toString());
-			text.setAttribute('fill', lineColor);
+			text.setAttribute('fill', '#000000');
 			text.setAttribute('font-size', fontSize.toString());
 			text.setAttribute('text-anchor', 'middle');
 			text.textContent = child.text;
