@@ -1,11 +1,10 @@
 import { Plugin, MarkdownPostProcessorContext, MarkdownRenderChild, PluginSettingTab, App, Setting, MarkdownRenderer } from 'obsidian';
 
 // 渲染模式枚举
-type RenderMode = 'logic' | 'fishbone' | 'clockwise';
+type RenderMode = 'logic' | 'clockwise';
 
 const RENDER_MODE_NAMES: Record<RenderMode, string> = {
 	'logic': '大纲',
-	'fishbone': '鱼骨图',
 	'clockwise': '中心辐射'
 };
 
@@ -332,16 +331,13 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 		// 根据渲染模式选择不同的渲染方法
 		switch (this.renderMode) {
-			case 'fishbone':
-				this.renderFishbone(this.root, linesGroup, nodesGroup);
-				break;
 			case 'clockwise':
 				this.renderClockwise(this.root, linesGroup, nodesGroup);
 				break;
 			case 'logic':
 			default:
-				this.renderLines(this.root, linesGroup, 50, 300, 0);
-				this.renderNodes(this.root, nodesGroup, 50, 300, 0);
+				// 大纲模式使用与中心辐射相同的渲染样式
+				this.renderClockwise(this.root, linesGroup, nodesGroup);
 				break;
 		}
 		this.centerTree(g, svg);
@@ -401,13 +397,12 @@ class MindMapRenderer extends MarkdownRenderChild {
 	private getModeIcon(mode: RenderMode): string {
 		switch (mode) {
 			case 'logic': return '→';
-			case 'fishbone': return '🐟';
 			case 'clockwise': return '↻';
 		}
 	}
 
 	private cycleRenderMode(btn: HTMLButtonElement) {
-		const modes: RenderMode[] = ['logic', 'fishbone', 'clockwise'];
+		const modes: RenderMode[] = ['logic', 'clockwise'];
 		const currentIndex = modes.indexOf(this.renderMode);
 		this.renderMode = modes[(currentIndex + 1) % modes.length];
 		btn.textContent = this.getModeIcon(this.renderMode);
@@ -902,167 +897,6 @@ class MindMapRenderer extends MarkdownRenderChild {
 		this.applyTransform();
 	}
 
-	// 鱼骨图渲染
-	private renderFishbone(root: MindMapNode, linesGroup: SVGGElement, nodesGroup: SVGGElement) {
-		const centerX = 400;
-		const centerY = 300;
-		const lineColor = '#605CE5';
-		const spineLength = 600;
-
-		// 绘制主骨干线
-		const spine = linesGroup.createSvg('line');
-		spine.setAttribute('x1', (centerX - spineLength / 2).toString());
-		spine.setAttribute('y1', centerY.toString());
-		spine.setAttribute('x2', (centerX + spineLength / 2).toString());
-		spine.setAttribute('y2', centerY.toString());
-		spine.setAttribute('stroke', lineColor);
-		spine.setAttribute('stroke-width', '3');
-
-		// 绘制箭头
-		const headX = centerX + spineLength / 2;
-		const arrowSize = 15;
-		const arrow = linesGroup.createSvg('polygon');
-		arrow.setAttribute('points', `${headX},${centerY} ${headX - arrowSize},${centerY - arrowSize / 2} ${headX - arrowSize},${centerY + arrowSize / 2}`);
-		arrow.setAttribute('fill', lineColor);
-
-		// 绘制根节点文字（在箭头右边）
-		const rootTextWidth = this.calculateTextWidth(root.text, 0);
-		const rootBg = nodesGroup.createSvg('rect');
-		rootBg.setAttribute('x', (headX + 18).toString());
-		rootBg.setAttribute('y', (centerY - 12).toString());
-		rootBg.setAttribute('width', rootTextWidth.toString());
-		rootBg.setAttribute('height', '20');
-		rootBg.setAttribute('fill', 'white');
-
-		const rootText = nodesGroup.createSvg('text');
-		rootText.setAttribute('x', (headX + 20).toString());
-		rootText.setAttribute('y', (centerY + 5).toString());
-		rootText.setAttribute('fill', lineColor);
-		rootText.setAttribute('font-size', '16');
-		rootText.setAttribute('font-weight', '600');
-		rootText.textContent = root.text;
-
-		// 分配子节点到上下两侧
-		const children = root.collapsed ? [] : root.children;
-		const topChildren = children.filter((_, i) => i % 2 === 0);
-		const bottomChildren = children.filter((_, i) => i % 2 === 1);
-
-		// 计算分支间距
-		const branchSpacing = spineLength / (Math.max(topChildren.length, bottomChildren.length) + 1);
-
-		// 第一阶段：绘制所有连线
-		topChildren.forEach((child, i) => {
-			const branchX = centerX - spineLength / 2 + branchSpacing * (i + 1);
-			this.renderFishboneBranchLines(child, linesGroup, branchX, centerY, -1, 0);
-		});
-		bottomChildren.forEach((child, i) => {
-			const branchX = centerX - spineLength / 2 + branchSpacing * (i + 1);
-			this.renderFishboneBranchLines(child, linesGroup, branchX, centerY, 1, 0);
-		});
-
-		// 第二阶段：绘制所有节点文字
-		topChildren.forEach((child, i) => {
-			const branchX = centerX - spineLength / 2 + branchSpacing * (i + 1);
-			this.renderFishboneBranchNodes(child, nodesGroup, branchX, centerY, -1, 0);
-		});
-		bottomChildren.forEach((child, i) => {
-			const branchX = centerX - spineLength / 2 + branchSpacing * (i + 1);
-			this.renderFishboneBranchNodes(child, nodesGroup, branchX, centerY, 1, 0);
-		});
-	}
-
-	// 计算鱼骨分支的终点位置
-	private getFishboneBranchEnd(x: number, y: number, direction: number, depth: number): { endX: number; endY: number } {
-		const branchLength = 80 - depth * 15;
-		const angle = direction * (Math.PI / 4);
-		const endX = x + branchLength * Math.cos(angle) * 0.3;
-		const endY = y + branchLength * Math.sin(angle) * direction;
-		return { endX, endY };
-	}
-
-	// 第一阶段：渲染鱼骨分支连线
-	private renderFishboneBranchLines(
-		node: MindMapNode,
-		linesGroup: SVGGElement,
-		x: number,
-		y: number,
-		direction: number,
-		depth: number
-	) {
-		const lineColor = '#605CE5';
-		const { endX, endY } = this.getFishboneBranchEnd(x, y, direction, depth);
-
-		// 绘制分支线
-		const branch = linesGroup.createSvg('line');
-		branch.setAttribute('x1', x.toString());
-		branch.setAttribute('y1', y.toString());
-		branch.setAttribute('x2', endX.toString());
-		branch.setAttribute('y2', endY.toString());
-		branch.setAttribute('stroke', lineColor);
-		branch.setAttribute('stroke-width', Math.max(1, 2 - depth * 0.3).toString());
-
-		// 递归渲染子节点连线
-		if (!node.collapsed && node.children.length > 0) {
-			const childSpacing = 60;
-			const totalChildWidth = (node.children.length - 1) * childSpacing;
-			const startX = endX - totalChildWidth / 2;
-
-			node.children.forEach((child, i) => {
-				const childX = startX + i * childSpacing;
-				this.renderFishboneBranchLines(child, linesGroup, childX, endY, direction, depth + 1);
-			});
-		}
-	}
-
-	// 第二阶段：渲染鱼骨分支节点
-	private renderFishboneBranchNodes(
-		node: MindMapNode,
-		nodesGroup: SVGGElement,
-		x: number,
-		y: number,
-		direction: number,
-		depth: number
-	) {
-		const lineColor = '#605CE5';
-		const { endX, endY } = this.getFishboneBranchEnd(x, y, direction, depth);
-
-		const fontSize = Math.max(10, 13 - depth);
-		const textWidth = this.calculateTextWidth(node.text, depth);
-
-		// 文字位置：在分支线终点的侧边，避免覆盖连线
-		const textOffset = direction * 18; // 文字与连线的偏移
-		const textX = endX - textWidth / 2;
-		const textY = endY + textOffset;
-
-		// 文字背景矩形
-		const textBg = nodesGroup.createSvg('rect');
-		textBg.setAttribute('x', (textX - 2).toString());
-		textBg.setAttribute('y', (textY - fontSize).toString());
-		textBg.setAttribute('width', (textWidth + 4).toString());
-		textBg.setAttribute('height', (fontSize + 6).toString());
-		textBg.setAttribute('fill', 'white');
-
-		// 绘制文字
-		const text = nodesGroup.createSvg('text');
-		text.setAttribute('x', textX.toString());
-		text.setAttribute('y', textY.toString());
-		text.setAttribute('fill', lineColor);
-		text.setAttribute('font-size', fontSize.toString());
-		text.textContent = node.text;
-
-		// 递归渲染子节点文字
-		if (!node.collapsed && node.children.length > 0) {
-			const childSpacing = 60;
-			const totalChildWidth = (node.children.length - 1) * childSpacing;
-			const startX = endX - totalChildWidth / 2;
-
-			node.children.forEach((child, i) => {
-				const childX = startX + i * childSpacing;
-				this.renderFishboneBranchNodes(child, nodesGroup, childX, endY, direction, depth + 1);
-			});
-		}
-	}
-
 	// 顺时针模式渲染
 	private renderClockwise(root: MindMapNode, linesGroup: SVGGElement, nodesGroup: SVGGElement) {
 		const lineColor = '#605CE5';
@@ -1071,13 +905,15 @@ class MindMapRenderer extends MarkdownRenderChild {
 		const startY = totalHeight / 2 + 50;
 
 		const textWidth = this.calculateTextWidth(root.text, 0);
+		const noteIconWidth = root.note ? 20 : 0; // 备注图标宽度
+		const totalNodeWidth = textWidth + noteIconWidth;
 		const nodeHeight = 24;
 
 		// 根节点背景
 		const bgRect = nodesGroup.createSvg('rect');
 		bgRect.setAttribute('x', startX.toString());
 		bgRect.setAttribute('y', (startY - nodeHeight / 2).toString());
-		bgRect.setAttribute('width', textWidth.toString());
+		bgRect.setAttribute('width', totalNodeWidth.toString());
 		bgRect.setAttribute('height', nodeHeight.toString());
 		bgRect.setAttribute('rx', '4');
 		bgRect.setAttribute('fill', lineColor);
@@ -1092,8 +928,13 @@ class MindMapRenderer extends MarkdownRenderChild {
 		rootText.setAttribute('text-anchor', 'middle');
 		rootText.textContent = root.text;
 
+		// 根节点备注图标
+		if (root.note) {
+			this.addNoteIcon(nodesGroup, startX + textWidth + 2, startY, root.note, 14, 'white');
+		}
+
 		if (!root.collapsed && root.children.length > 0) {
-			const parentRight = startX + textWidth;
+			const parentRight = startX + totalNodeWidth;
 			this.renderClockwiseChildren(root.children, linesGroup, nodesGroup, parentRight, startY, 1);
 		}
 	}
@@ -1123,6 +964,8 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 			const fontSize = Math.max(10, 13 - depth);
 			const textWidth = this.calculateTextWidth(child.text, depth);
+			const noteIconWidth = child.note ? 18 : 0; // 备注图标宽度
+			const totalNodeWidth = textWidth + noteIconWidth;
 			const nodeHeight = fontSize + 10;
 			const nodeX = parentRight + horizontalGap;
 
@@ -1138,7 +981,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const bgRect = nodesGroup.createSvg('rect');
 			bgRect.setAttribute('x', nodeX.toString());
 			bgRect.setAttribute('y', (childCenterY - nodeHeight / 2).toString());
-			bgRect.setAttribute('width', textWidth.toString());
+			bgRect.setAttribute('width', totalNodeWidth.toString());
 			bgRect.setAttribute('height', nodeHeight.toString());
 			bgRect.setAttribute('rx', '3');
 			bgRect.setAttribute('fill', 'white');
@@ -1154,9 +997,14 @@ class MindMapRenderer extends MarkdownRenderChild {
 			text.setAttribute('text-anchor', 'middle');
 			text.textContent = child.text;
 
+			// 备注图标（在文字后面）
+			if (child.note) {
+				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor);
+			}
+
 			// 递归渲染子节点
 			if (!child.collapsed && child.children.length > 0) {
-				const childRight = nodeX + textWidth;
+				const childRight = nodeX + totalNodeWidth;
 				this.renderClockwiseChildren(child.children, linesGroup, nodesGroup, childRight, childCenterY, depth + 1);
 			}
 
@@ -1177,5 +1025,74 @@ class MindMapRenderer extends MarkdownRenderChild {
 			}
 		}
 		return Math.max(28, totalHeight);
+	}
+
+	// 添加备注图标
+	private addNoteIcon(
+		group: SVGGElement,
+		x: number,
+		y: number,
+		note: string,
+		fontSize: number,
+		color: string
+	) {
+		const noteIcon = group.createSvg('text');
+		noteIcon.setAttribute('x', x.toString());
+		noteIcon.setAttribute('y', (y + fontSize / 3).toString());
+		noteIcon.setAttribute('font-size', (fontSize - 2).toString());
+		noteIcon.setAttribute('fill', color);
+		noteIcon.textContent = '📝';
+		noteIcon.style.cursor = 'pointer';
+		noteIcon.style.opacity = '0.7';
+
+		// 创建 tooltip
+		const tooltip = this.container.createDiv();
+		tooltip.style.cssText = `
+			position: fixed;
+			background: #fffef0;
+			border: 1px solid #e6ddb3;
+			padding: 8px 12px;
+			line-height: 1.4;
+			border-radius: 6px;
+			box-shadow: 0 3px 12px rgba(0,0,0,0.15);
+			z-index: 10000;
+			max-width: 350px;
+			font-size: 13px;
+			display: none;
+		`;
+
+		const contentDiv = tooltip.createDiv();
+		MarkdownRenderer.render(this.app, note, contentDiv, '', this);
+
+		const showTooltip = (e: MouseEvent) => {
+			const rect = (e.target as Element).getBoundingClientRect();
+			noteIcon.style.opacity = '1';
+			tooltip.style.display = 'block';
+			tooltip.style.left = `${rect.left}px`;
+			tooltip.style.top = `${rect.bottom + 4}px`;
+
+			requestAnimationFrame(() => {
+				const tooltipRect = tooltip.getBoundingClientRect();
+				if (tooltipRect.right > window.innerWidth - 10) {
+					tooltip.style.left = `${window.innerWidth - tooltipRect.width - 10}px`;
+				}
+				if (tooltipRect.bottom > window.innerHeight - 10) {
+					tooltip.style.top = `${rect.top - tooltipRect.height - 4}px`;
+				}
+			});
+		};
+
+		const hideTooltip = () => {
+			tooltip.style.display = 'none';
+			noteIcon.style.opacity = '0.7';
+		};
+
+		noteIcon.addEventListener('mouseenter', showTooltip);
+		noteIcon.addEventListener('mouseleave', hideTooltip);
+		tooltip.addEventListener('mouseenter', () => {
+			tooltip.style.display = 'block';
+			noteIcon.style.opacity = '1';
+		});
+		tooltip.addEventListener('mouseleave', hideTooltip);
 	}
 }
