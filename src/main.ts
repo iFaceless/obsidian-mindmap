@@ -136,6 +136,7 @@ interface MindMapNode {
 
 interface MindMapSettings {
 	enableWheelZoom: boolean;
+	enablePinchZoom: boolean;
 	defaultRenderMode: RenderMode;
 	notePanelWidth: number;
 	currentTheme: string;
@@ -149,6 +150,7 @@ interface MindMapSettings {
 
 const DEFAULT_SETTINGS: MindMapSettings = {
 	enableWheelZoom: false,
+	enablePinchZoom: false,
 	defaultRenderMode: 'clockwise',
 	notePanelWidth: 300,
 	currentTheme: 'Default',
@@ -385,6 +387,16 @@ class MindMapSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
+			.setName('Enable pinch zoom')
+			.setDesc('Allow zooming the mind map using trackpad pinch gesture (spread to zoom in, pinch to zoom out).')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enablePinchZoom)
+				.onChange(async (value) => {
+					this.plugin.settings.enablePinchZoom = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Note panel width')
 			.setDesc('Width of the note panel in pixels.')
 			.addText(text => text
@@ -521,6 +533,10 @@ class MindMapRenderer extends MarkdownRenderChild {
 	private svg: SVGSVGElement | null = null;
 	private mainGroup: SVGGElement | null = null;
 	private zoomLevelSelect: HTMLSelectElement | null = null; // 缩放比例下拉框
+
+	// Pinch zoom state
+	private initialPinchDistance: number = 0;
+	private initialScale: number = 1;
 
 	// 保存非全屏状态的缩放和平移
 	private savedScale: number = 1;
@@ -1034,6 +1050,61 @@ class MindMapRenderer extends MarkdownRenderChild {
 				const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
 				this.zoom(zoomFactor, e.clientX, e.clientY);
 			});
+		}
+
+		// Pinch zoom with trackpad (only if enabled in settings)
+		if (this.settings.enablePinchZoom) {
+			svg.addEventListener('touchstart', (e: TouchEvent) => {
+				if (e.touches.length === 2) {
+					// 双指捏合手势
+					e.preventDefault();
+					const touch1 = e.touches[0];
+					const touch2 = e.touches[1];
+					this.initialPinchDistance = Math.hypot(
+						touch2.clientX - touch1.clientX,
+						touch2.clientY - touch1.clientY
+					);
+					this.initialScale = this.scale;
+				}
+			}, { passive: false });
+
+			svg.addEventListener('touchmove', (e: TouchEvent) => {
+				if (e.touches.length === 2) {
+					e.preventDefault();
+					const touch1 = e.touches[0];
+					const touch2 = e.touches[1];
+					const currentDistance = Math.hypot(
+						touch2.clientX - touch1.clientX,
+						touch2.clientY - touch1.clientY
+					);
+					
+					// 计算缩放比例
+					const scaleFactor = currentDistance / this.initialPinchDistance;
+					const newScale = Math.max(0.1, Math.min(5, this.initialScale * scaleFactor));
+					
+					// 计算中心点（两个手指的中点）
+					const centerX = (touch1.clientX + touch2.clientX) / 2;
+					const centerY = (touch1.clientY + touch2.clientY) / 2;
+					
+					// 应用缩放
+					if (this.svg) {
+						const rect = this.svg.getBoundingClientRect();
+						const svgCenterX = centerX - rect.left;
+						const svgCenterY = centerY - rect.top;
+						
+						this.translateX = svgCenterX - (svgCenterX - this.translateX) * (newScale / this.scale);
+						this.translateY = svgCenterY - (svgCenterY - this.translateY) * (newScale / this.scale);
+					}
+					
+					this.scale = newScale;
+					this.applyTransform();
+					
+					// 更新缩放百分比选择框
+					if (this.zoomLevelSelect) {
+						this.updateZoomLevelSelect(this.zoomLevelSelect, this.scale);
+					}
+				}
+			}, { passive: false });
 		}
 
 		// Pan with mouse drag
