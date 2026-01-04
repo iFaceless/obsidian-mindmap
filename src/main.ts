@@ -1713,10 +1713,11 @@ class MindMapRenderer extends MarkdownRenderChild {
 	}
 
 	private refresh() {
-		// Preserve zoom state during refresh
+		// Preserve zoom and fullscreen state during refresh
 		const savedScale = this.scale;
 		const savedTranslateX = this.translateX;
 		const savedTranslateY = this.translateY;
+		const wasFullscreen = this.isFullscreen;
 		
 		this.container.innerHTML = '';
 		this.render();
@@ -1726,6 +1727,19 @@ class MindMapRenderer extends MarkdownRenderChild {
 		this.translateX = savedTranslateX;
 		this.translateY = savedTranslateY;
 		this.applyTransform();
+		
+		// Restore fullscreen state
+		if (wasFullscreen && this.wrapper) {
+			this.isFullscreen = true;
+			this.wrapper.style.height = '100vh';
+			this.wrapper.style.background = this.settings.canvasBackgroundColor;
+			
+			// Update fullscreen button
+			if (this.fullscreenBtn) {
+				this.fullscreenBtn.textContent = '⛶';
+				this.fullscreenBtn.title = 'Exit fullscreen';
+			}
+		}
 	}
 
 	// 大纲模式渲染（全部向右展开）
