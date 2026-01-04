@@ -966,6 +966,20 @@ class MindMapRenderer extends MarkdownRenderChild {
 		const separator2 = controls.createSpan();
 		separator2.style.cssText = 'width: 1px; background: #ddd; margin: 0 5px;';
 
+		// Expand All button
+		const expandAllBtn = controls.createEl('button');
+		expandAllBtn.textContent = '⊞';
+		this.styleButton(expandAllBtn);
+		expandAllBtn.title = 'Expand all';
+		expandAllBtn.addEventListener('click', () => this.expandAll());
+
+		// Collapse All button
+		const collapseAllBtn = controls.createEl('button');
+		collapseAllBtn.textContent = '⊟';
+		this.styleButton(collapseAllBtn);
+		collapseAllBtn.title = 'Collapse all';
+		collapseAllBtn.addEventListener('click', () => this.collapseAll());
+
 		// Copy as PNG button
 		const copyBtn = controls.createEl('button');
 		copyBtn.textContent = '📷';
