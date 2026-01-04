@@ -601,12 +601,18 @@ class MindMapRenderer extends MarkdownRenderChild {
 		const stack: { node: MindMapNode; level: number }[] = [];
 		let currentNode: MindMapNode | null = null;
 		let noteLines: string[] = [];
+		let nodeIndex = 0; // 用于生成稳定 ID
 
 		const flushNote = () => {
 			if (currentNode && noteLines.length > 0) {
 				currentNode.note = noteLines.join('\n').trim();
 				noteLines = [];
 			}
+		};
+
+		// 生成稳定的节点 ID
+		const generateStableId = (text: string, level: number, index: number): string => {
+			return `heading-${level}-${index}-${text.substring(0, 20).replace(/\s+/g, '_')}`;
 		};
 
 		for (const line of lines) {
@@ -622,7 +628,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 				const level = headingMatch[1].length; // # 的数量代表层级
 				const nodeText = headingMatch[2].trim();
 
-				const nodeId = `node-${Math.random().toString(36).substr(2, 9)}`;
+				const nodeId = generateStableId(nodeText, level, nodeIndex++);
 				const newNode: MindMapNode = {
 					id: nodeId,
 					text: nodeText,
@@ -686,10 +692,16 @@ class MindMapRenderer extends MarkdownRenderChild {
 			id: 'root',
 			text: rootTitle,
 			children: [],
-			collapsed: false
+			collapsed: collapsedStateMap.get('root') || false
 		};
 
 		const stack: { node: MindMapNode; level: number; indent: number }[] = [{ node: root, level: -1, indent: -1 }];
+		let nodeIndex = 0; // 用于生成稳定 ID
+
+		// 生成稳定的节点 ID
+		const generateStableId = (text: string, indent: number, index: number): string => {
+			return `list-${indent}-${index}-${text.substring(0, 20).replace(/\s+/g, '_')}`;
+		};
 
 		// 计算缩进宽度（Tab算作4个空格）
 		const getIndentWidth = (line: string): number => {
@@ -719,7 +731,7 @@ class MindMapRenderer extends MarkdownRenderChild {
 			// 移除列表标记（- 或 *）
 			const nodeText = trimmed.replace(/^[-*]\s*/, '').trim();
 
-			const nodeId = `node-${Math.random().toString(36).substr(2, 9)}`;
+			const nodeId = generateStableId(nodeText, indent, nodeIndex++);
 			const newNode: MindMapNode = {
 				id: nodeId,
 				text: nodeText,
@@ -1049,11 +1061,52 @@ class MindMapRenderer extends MarkdownRenderChild {
 				e.preventDefault();
 				const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
 				this.zoom(zoomFactor, e.clientX, e.clientY);
-			});
+			}, { passive: false });
 		}
 
 		// Pinch zoom with trackpad (only if enabled in settings)
 		if (this.settings.enablePinchZoom) {
+			// macOS 触控板双指捏合：通过 wheel 事件 + ctrlKey 检测
+			svg.addEventListener('wheel', (e: WheelEvent) => {
+				// macOS 触控板捏合手势会触发带 ctrlKey 的 wheel 事件
+				if (e.ctrlKey) {
+					e.preventDefault();
+					// deltaY 为正表示缩小（捏合），为负表示放大（张开）
+					const zoomFactor = e.deltaY > 0 ? 0.95 : 1.05;
+					this.zoom(zoomFactor, e.clientX, e.clientY);
+				}
+			}, { passive: false });
+
+			// Safari gesture 事件支持（更精确的捏合手势）
+			svg.addEventListener('gesturestart', ((e: any) => {
+				e.preventDefault();
+				this.initialScale = this.scale;
+			}) as EventListener, { passive: false });
+
+			svg.addEventListener('gesturechange', ((e: any) => {
+				e.preventDefault();
+				const newScale = Math.max(0.1, Math.min(5, this.initialScale * e.scale));
+				
+				// 应用缩放，以手势中心点为中心
+				if (this.svg) {
+					const rect = this.svg.getBoundingClientRect();
+					const centerX = e.clientX - rect.left;
+					const centerY = e.clientY - rect.top;
+					
+					this.translateX = centerX - (centerX - this.translateX) * (newScale / this.scale);
+					this.translateY = centerY - (centerY - this.translateY) * (newScale / this.scale);
+				}
+				
+				this.scale = newScale;
+				this.applyTransform();
+				
+				// 更新缩放百分比选择框
+				if (this.zoomLevelSelect) {
+					this.updateZoomLevelSelect(this.zoomLevelSelect, this.scale);
+				}
+			}) as EventListener, { passive: false });
+
+			// 触摸屏设备的双指缩放（保留原有功能）
 			svg.addEventListener('touchstart', (e: TouchEvent) => {
 				if (e.touches.length === 2) {
 					// 双指捏合手势
@@ -1545,41 +1598,20 @@ class MindMapRenderer extends MarkdownRenderChild {
 			noteIcon.addEventListener('click', showNote);
 		}
 
-		// 非叶子节点：绘制空心圆
+		// 非叶子节点：绘制 XMind 风格圆圈
 		if (!isLeaf || (node.children.length > 0 && node.collapsed)) {
 			const circleX = x + lineLength + nodeRadius;
 			
-			// 空心圆背景（白色填充）
-			const circleBg = nodeGroup.createSvg('circle');
-			circleBg.setAttribute('cx', circleX.toString());
-			circleBg.setAttribute('cy', y.toString());
-			circleBg.setAttribute('r', (nodeRadius + 1).toString());
-			circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-			// 空心圆
-			const circle = nodeGroup.createSvg('circle');
-			circle.setAttribute('cx', circleX.toString());
-			circle.setAttribute('cy', y.toString());
-			circle.setAttribute('r', nodeRadius.toString());
-			circle.setAttribute('fill', this.settings.nodeBackgroundColor);
-			circle.setAttribute('stroke', textColor);
-			circle.setAttribute('stroke-width', '1.5');
-			circle.style.cursor = 'pointer';
-			circle.addEventListener('click', toggleNode);
-
-			// 显示展开/折叠指示器
-			if (node.children.length > 0) {
-				const indicatorText = nodeGroup.createSvg('text');
-				indicatorText.setAttribute('x', (circleX - 3).toString());
-				indicatorText.setAttribute('y', (y + 4).toString());
-				indicatorText.setAttribute('fill', textColor);
-				indicatorText.setAttribute('font-size', '12');
-				indicatorText.setAttribute('font-weight', 'bold');
-				indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-				indicatorText.textContent = node.collapsed ? '+' : '-';
-				indicatorText.style.cursor = 'pointer';
-				indicatorText.addEventListener('click', toggleNode);
-			}
+			this.createXMindCircle(
+				nodeGroup,
+				circleX,
+				y,
+				nodeRadius,
+				textColor,
+				node.children.length,
+				node.collapsed,
+				toggleNode
+			);
 		}
 		// 叶子节点：不绘制空心圆，只有横线和文字
 
@@ -1732,60 +1764,9 @@ class MindMapRenderer extends MarkdownRenderChild {
 			this.addNoteIcon(nodesGroup, startX + textWidth + 2, startY, root.note, 14, 'white', root.text);
 		}
 
-		// Root 节点的圆圈和展开/收缩功能
+		// 全部子节点向右展开（中心节点不提供收缩功能）
 		if (root.children.length > 0) {
-			const nodeRadius = 6;
-			const circleX = startX + totalNodeWidth + nodeRadius + 2; // 在节点框右侧，留 2px 间隙
-			const circleY = startY;
-
-			// 空心圆背景
-			const circleBg = nodesGroup.createSvg('circle');
-			circleBg.setAttribute('cx', circleX.toString());
-			circleBg.setAttribute('cy', circleY.toString());
-			circleBg.setAttribute('r', (nodeRadius + 1).toString());
-			circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-			// 空心圆
-			const circle = nodesGroup.createSvg('circle');
-			circle.setAttribute('cx', circleX.toString());
-			circle.setAttribute('cy', circleY.toString());
-			circle.setAttribute('r', nodeRadius.toString());
-			circle.setAttribute('fill', this.settings.nodeBackgroundColor);
-			circle.setAttribute('stroke', lineColor);
-			circle.setAttribute('stroke-width', '2');
-			circle.style.cursor = 'pointer';
-
-			// 展开/收缩指示器
-			const indicatorText = nodesGroup.createSvg('text');
-			indicatorText.setAttribute('x', (circleX - 3).toString());
-			indicatorText.setAttribute('y', (circleY + 4).toString());
-			indicatorText.setAttribute('fill', lineColor);
-			indicatorText.setAttribute('font-size', '12');
-			indicatorText.setAttribute('font-weight', 'bold');
-			indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-			indicatorText.textContent = root.collapsed ? '+' : '-';
-			indicatorText.style.cursor = 'pointer';
-
-			// 点击事件
-			const toggleRoot = (e: MouseEvent) => {
-				e.preventDefault();
-				e.stopPropagation();
-				e.stopImmediatePropagation();
-				this.isDragging = false;
-				root.collapsed = !root.collapsed;
-				collapsedStateMap.set(root.id, root.collapsed);
-				this.refresh();
-			};
-
-			circle.addEventListener('click', toggleRoot);
-			indicatorText.addEventListener('click', toggleRoot);
-		}
-
-		// 全部子节点向右展开
-		if (!root.collapsed && root.children.length > 0) {
-			const nodeRadius = 6;
-			const circleX = startX + totalNodeWidth + nodeRadius + 2;
-			const parentRight = circleX + nodeRadius + 30; // 从圆圈右侧开始，留 30px 间距
+			const parentRight = startX + totalNodeWidth; // 从节点框右边缘开始
 			this.renderOutlineViewChildren(root.children, linesGroup, nodesGroup, parentRight, startY, 1);
 		}
 	}
@@ -1821,15 +1802,16 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const nodeHeight = fontSize + 10;
 			const nodeX = parentRight + horizontalGap;
 			const nodeRadius = 6;
+			const circleGap = 3; // 圆圈与节点框的间距
 
-			// 计算圆圈位置（在节点框右侧，留 2px 间隙）
-			const circleX = nodeX + totalNodeWidth + nodeRadius + 2;
+			// 计算圆圈位置（节点框右侧 + 间距 + 圆圈半径）
+			const circleX = nodeX + totalNodeWidth + circleGap + nodeRadius;
 			const circleY = childCenterY;
 			const strokeWidth = 1.5; // 与连线粗细一致
 
-			// 绘制连接线（延伸到圆圈左边缘）
+			// 绘制连接线（延伸到节点框左边缘）
 			const path = linesGroup.createSvg('path');
-			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${circleX - nodeRadius} ${childCenterY}`;
+			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${nodeX} ${childCenterY}`;
 			path.setAttribute('d', d);
 			path.setAttribute('stroke', lineColor);
 			path.setAttribute('stroke-width', strokeWidth);
@@ -1860,57 +1842,34 @@ class MindMapRenderer extends MarkdownRenderChild {
 				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor);
 			}
 
-			// 空心圆和展开/收缩功能
+			// 圆圈和展开/收缩功能
 			if (child.children.length > 0) {
-				// 空心圆背景（遮挡连接线）
-				const circleBg = nodesGroup.createSvg('circle');
-				circleBg.setAttribute('cx', circleX.toString());
-				circleBg.setAttribute('cy', circleY.toString());
-				circleBg.setAttribute('r', (nodeRadius + 1).toString());
-				circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-				// 空心圆
-				const circle = nodesGroup.createSvg('circle');
-				circle.setAttribute('cx', circleX.toString());
-				circle.setAttribute('cy', circleY.toString());
-				circle.setAttribute('r', nodeRadius.toString());
-				circle.setAttribute('fill', this.settings.nodeBackgroundColor);
-				circle.setAttribute('stroke', lineColor); // 颜色与连线一致
-				circle.setAttribute('stroke-width', strokeWidth); // 粗细与连线一致
-				circle.style.cursor = 'pointer';
-
-				// 展开/收缩指示器
-				const indicatorText = nodesGroup.createSvg('text');
-				indicatorText.setAttribute('x', (circleX - 3).toString());
-				indicatorText.setAttribute('y', (circleY + 4).toString());
-				indicatorText.setAttribute('fill', lineColor); // 颜色与连线一致
-				indicatorText.setAttribute('font-size', '12');
-				indicatorText.setAttribute('font-weight', 'bold');
-				indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-				indicatorText.textContent = child.collapsed ? '+' : '-';
-				indicatorText.style.cursor = 'pointer';
-
 				// 点击事件
 				const toggleNode = (e: MouseEvent) => {
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
-					
-					// 重置拖拽状态，防止拖拽干扰
 					this.isDragging = false;
-					
 					child.collapsed = !child.collapsed;
 					collapsedStateMap.set(child.id, child.collapsed);
 					this.refresh();
 				};
 
-				circle.addEventListener('click', toggleNode);
-				indicatorText.addEventListener('click', toggleNode);
+				this.createXMindCircle(
+					nodesGroup,
+					circleX,
+					circleY,
+					nodeRadius,
+					lineColor,
+					child.children.length,
+					child.collapsed,
+					toggleNode
+				);
 			}
 
 			// 递归渲染子节点
 			if (!child.collapsed && child.children.length > 0) {
-				const childRight = circleX + nodeRadius + horizontalGap; // 从圆圈右侧开始
+				const childRight = nodeX + totalNodeWidth; // 从节点框右边缘开始
 				this.renderOutlineViewChildren(child.children, linesGroup, nodesGroup, childRight, childCenterY, depth + 1);
 			}
 
@@ -1954,86 +1913,8 @@ class MindMapRenderer extends MarkdownRenderChild {
 			this.addNoteIcon(nodesGroup, rootX + textWidth + 2, centerY, root.note, 14, 'white', root.text);
 		}
 
-		// Root 节点的圆圈和展开/收缩功能
+		// 中心节点不提供收缩功能，直接渲染子节点
 		if (root.children.length > 0) {
-			const nodeRadius = 6;
-			
-			// 右侧圆圈（在节点框右侧，留 2px 间隙）
-			const rightCircleX = rootX + totalNodeWidth + nodeRadius + 2;
-			const rightCircleY = centerY;
-
-			const rightCircleBg = nodesGroup.createSvg('circle');
-			rightCircleBg.setAttribute('cx', rightCircleX.toString());
-			rightCircleBg.setAttribute('cy', rightCircleY.toString());
-			rightCircleBg.setAttribute('r', (nodeRadius + 1).toString());
-			rightCircleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-			const rightCircle = nodesGroup.createSvg('circle');
-			rightCircle.setAttribute('cx', rightCircleX.toString());
-			rightCircle.setAttribute('cy', rightCircleY.toString());
-			rightCircle.setAttribute('r', nodeRadius.toString());
-			rightCircle.setAttribute('fill', this.settings.nodeBackgroundColor);
-			rightCircle.setAttribute('stroke', lineColor);
-			rightCircle.setAttribute('stroke-width', '2');
-			rightCircle.style.cursor = 'pointer';
-
-			const rightIndicatorText = nodesGroup.createSvg('text');
-			rightIndicatorText.setAttribute('x', (rightCircleX - 3).toString());
-			rightIndicatorText.setAttribute('y', (rightCircleY + 4).toString());
-			rightIndicatorText.setAttribute('fill', lineColor);
-			rightIndicatorText.setAttribute('font-size', '12');
-			rightIndicatorText.setAttribute('font-weight', 'bold');
-			rightIndicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-			rightIndicatorText.textContent = root.collapsed ? '+' : '-';
-			rightIndicatorText.style.cursor = 'pointer';
-
-			// 左侧圆圈（在节点框左侧，留 2px 间隙）
-			const leftCircleX = rootX - nodeRadius - 2;
-			const leftCircleY = centerY;
-
-			const leftCircleBg = nodesGroup.createSvg('circle');
-			leftCircleBg.setAttribute('cx', leftCircleX.toString());
-			leftCircleBg.setAttribute('cy', leftCircleY.toString());
-			leftCircleBg.setAttribute('r', (nodeRadius + 1).toString());
-			leftCircleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-			const leftCircle = nodesGroup.createSvg('circle');
-			leftCircle.setAttribute('cx', leftCircleX.toString());
-			leftCircle.setAttribute('cy', leftCircleY.toString());
-			leftCircle.setAttribute('r', nodeRadius.toString());
-			leftCircle.setAttribute('fill', this.settings.nodeBackgroundColor);
-			leftCircle.setAttribute('stroke', lineColor);
-			leftCircle.setAttribute('stroke-width', '2');
-			leftCircle.style.cursor = 'pointer';
-
-			const leftIndicatorText = nodesGroup.createSvg('text');
-			leftIndicatorText.setAttribute('x', (leftCircleX - 3).toString());
-			leftIndicatorText.setAttribute('y', (leftCircleY + 4).toString());
-			leftIndicatorText.setAttribute('fill', lineColor);
-			leftIndicatorText.setAttribute('font-size', '12');
-			leftIndicatorText.setAttribute('font-weight', 'bold');
-			leftIndicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-			leftIndicatorText.textContent = root.collapsed ? '+' : '-';
-			leftIndicatorText.style.cursor = 'pointer';
-
-			// 点击事件
-			const toggleRoot = (e: MouseEvent) => {
-				e.preventDefault();
-				e.stopPropagation();
-				e.stopImmediatePropagation();
-				this.isDragging = false;
-				root.collapsed = !root.collapsed;
-				collapsedStateMap.set(root.id, root.collapsed);
-				this.refresh();
-			};
-
-			rightCircle.addEventListener('click', toggleRoot);
-			rightIndicatorText.addEventListener('click', toggleRoot);
-			leftCircle.addEventListener('click', toggleRoot);
-			leftIndicatorText.addEventListener('click', toggleRoot);
-		}
-
-		if (!root.collapsed && root.children.length > 0) {
 			const children = root.children;
 			// 计算左右分配：前半部分在右边，后半部分在左边
 			// 奇数时右边多一个
@@ -2043,17 +1924,13 @@ class MindMapRenderer extends MarkdownRenderChild {
 
 			// 渲染右侧子节点
 			if (rightChildren.length > 0) {
-				const nodeRadius = 6;
-				const rightCircleX = rootX + totalNodeWidth + nodeRadius + 2;
-				const parentRight = rightCircleX + nodeRadius + 30; // 从圆圈右侧开始，留 30px 间距
+				const parentRight = rootX + totalNodeWidth; // 从节点框右边缘开始
 				this.renderRadialMindMapChildrenRight(rightChildren, linesGroup, nodesGroup, parentRight, centerY, 1);
 			}
 
 			// 渲染左侧子节点（镜像布局）
 			if (leftChildren.length > 0) {
-				const nodeRadius = 6;
-				const leftCircleX = rootX - nodeRadius - 2;
-				const parentLeft = leftCircleX - nodeRadius - 30; // 从圆圈左侧开始，留 30px 间距
+				const parentLeft = rootX; // 从节点框左边缘开始
 				this.renderRadialMindMapChildrenLeft(leftChildren, linesGroup, nodesGroup, parentLeft, centerY, 1);
 			}
 		}
@@ -2091,14 +1968,14 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const nodeX = parentRight + horizontalGap;
 			const nodeRadius = 6;
 
-			// 计算圆圈位置（在节点框右侧，留 2px 间隙）
-			const circleX = nodeX + totalNodeWidth + nodeRadius + 2;
+			// 计算圆圈位置（紧贴节点框右侧）
+			const circleX = nodeX + totalNodeWidth + nodeRadius;
 			const circleY = childCenterY;
 			const strokeWidth = 1.5; // 与连线粗细一致
 
-			// 绘制连接线（延伸到圆圈左边缘）
+			// 绘制连接线（延伸到节点框左边缘）
 			const path = linesGroup.createSvg('path');
-			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${circleX - nodeRadius} ${childCenterY}`;
+			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${nodeX} ${childCenterY}`;
 			path.setAttribute('d', d);
 			path.setAttribute('stroke', lineColor);
 			path.setAttribute('stroke-width', strokeWidth);
@@ -2129,57 +2006,34 @@ class MindMapRenderer extends MarkdownRenderChild {
 				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor, child.text);
 			}
 
-			// 空心圆和展开/收缩功能
+			// 圆圈和展开/收缩功能
 			if (child.children.length > 0) {
-				// 空心圆背景（遮挡连接线）
-				const circleBg = nodesGroup.createSvg('circle');
-				circleBg.setAttribute('cx', circleX.toString());
-				circleBg.setAttribute('cy', circleY.toString());
-				circleBg.setAttribute('r', (nodeRadius + 1).toString());
-				circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-				// 空心圆
-				const circle = nodesGroup.createSvg('circle');
-				circle.setAttribute('cx', circleX.toString());
-				circle.setAttribute('cy', circleY.toString());
-				circle.setAttribute('r', nodeRadius.toString());
-				circle.setAttribute('fill', this.settings.nodeBackgroundColor);
-				circle.setAttribute('stroke', lineColor); // 颜色与连线一致
-				circle.setAttribute('stroke-width', strokeWidth); // 粗细与连线一致
-				circle.style.cursor = 'pointer';
-
-				// 展开/收缩指示器
-				const indicatorText = nodesGroup.createSvg('text');
-				indicatorText.setAttribute('x', (circleX - 3).toString());
-				indicatorText.setAttribute('y', (circleY + 4).toString());
-				indicatorText.setAttribute('fill', lineColor); // 颜色与连线一致
-				indicatorText.setAttribute('font-size', '12');
-				indicatorText.setAttribute('font-weight', 'bold');
-				indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-				indicatorText.textContent = child.collapsed ? '+' : '-';
-				indicatorText.style.cursor = 'pointer';
-
 				// 点击事件
 				const toggleNode = (e: MouseEvent) => {
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
-					
-					// 重置拖拽状态，防止拖拽干扰
 					this.isDragging = false;
-					
 					child.collapsed = !child.collapsed;
 					collapsedStateMap.set(child.id, child.collapsed);
 					this.refresh();
 				};
 
-				circle.addEventListener('click', toggleNode);
-				indicatorText.addEventListener('click', toggleNode);
+				this.createXMindCircle(
+					nodesGroup,
+					circleX,
+					circleY,
+					nodeRadius,
+					lineColor,
+					child.children.length,
+					child.collapsed,
+					toggleNode
+				);
 			}
 
 			// 递归渲染子节点
 			if (!child.collapsed && child.children.length > 0) {
-				const childRight = circleX + nodeRadius + horizontalGap; // 从圆圈右侧开始
+				const childRight = nodeX + totalNodeWidth; // 从节点框右边缘开始
 				this.renderRadialMindMapChildrenRight(child.children, linesGroup, nodesGroup, childRight, childCenterY, depth + 1);
 			}
 
@@ -2219,14 +2073,14 @@ class MindMapRenderer extends MarkdownRenderChild {
 			const nodeRadius = 6;
 			const nodeX = parentLeft - horizontalGap - totalNodeWidth; // 左侧节点X坐标
 
-			// 计算圆圈位置（在节点框左侧，留 2px 间隙）
-			const circleX = nodeX - nodeRadius - 2;
+			// 计算圆圈位置（紧贴节点框左侧）
+			const circleX = nodeX - nodeRadius;
 			const circleY = childCenterY;
 			const strokeWidth = 1.5; // 与连线粗细一致
 
-			// 绘制连接线（延伸到圆圈右边缘）
+			// 绘制连接线（延伸到节点框右边缘）
 			const path = linesGroup.createSvg('path');
-			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${circleX + nodeRadius} ${childCenterY}`;
+			const d = `M ${lineStartX} ${parentY} L ${turnX} ${parentY} L ${turnX} ${childCenterY} L ${nodeX + totalNodeWidth} ${childCenterY}`;
 			path.setAttribute('d', d);
 			path.setAttribute('stroke', lineColor);
 			path.setAttribute('stroke-width', strokeWidth);
@@ -2257,57 +2111,34 @@ class MindMapRenderer extends MarkdownRenderChild {
 				this.addNoteIcon(nodesGroup, nodeX + textWidth + 2, childCenterY, child.note, fontSize, lineColor, child.text);
 			}
 
-			// 空心圆和展开/收缩功能（在节点左侧）
+			// 圆圈和展开/收缩功能（在节点左侧）
 			if (child.children.length > 0) {
-				// 空心圆背景（遮挡连接线）
-				const circleBg = nodesGroup.createSvg('circle');
-				circleBg.setAttribute('cx', circleX.toString());
-				circleBg.setAttribute('cy', circleY.toString());
-				circleBg.setAttribute('r', (nodeRadius + 1).toString());
-				circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
-
-				// 空心圆
-				const circle = nodesGroup.createSvg('circle');
-				circle.setAttribute('cx', circleX.toString());
-				circle.setAttribute('cy', circleY.toString());
-				circle.setAttribute('r', nodeRadius.toString());
-				circle.setAttribute('fill', this.settings.nodeBackgroundColor);
-				circle.setAttribute('stroke', lineColor); // 颜色与连线一致
-				circle.setAttribute('stroke-width', strokeWidth); // 粗细与连线一致
-				circle.style.cursor = 'pointer';
-
-				// 展开/收缩指示器
-				const indicatorText = nodesGroup.createSvg('text');
-				indicatorText.setAttribute('x', (circleX - 3).toString());
-				indicatorText.setAttribute('y', (circleY + 4).toString());
-				indicatorText.setAttribute('fill', lineColor); // 颜色与连线一致
-				indicatorText.setAttribute('font-size', '12');
-				indicatorText.setAttribute('font-weight', 'bold');
-				indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
-				indicatorText.textContent = child.collapsed ? '+' : '-';
-				indicatorText.style.cursor = 'pointer';
-
 				// 点击事件
 				const toggleNode = (e: MouseEvent) => {
 					e.preventDefault();
 					e.stopPropagation();
 					e.stopImmediatePropagation();
-					
-					// 重置拖拽状态，防止拖拽干扰
 					this.isDragging = false;
-					
 					child.collapsed = !child.collapsed;
 					collapsedStateMap.set(child.id, child.collapsed);
 					this.refresh();
 				};
 
-				circle.addEventListener('click', toggleNode);
-				indicatorText.addEventListener('click', toggleNode);
+				this.createXMindCircle(
+					nodesGroup,
+					circleX,
+					circleY,
+					nodeRadius,
+					lineColor,
+					child.children.length,
+					child.collapsed,
+					toggleNode
+				);
 			}
 
 			// 递归渲染子节点（继续向左展开）
 			if (!child.collapsed && child.children.length > 0) {
-				this.renderRadialMindMapChildrenLeft(child.children, linesGroup, nodesGroup, circleX - nodeRadius - horizontalGap, childCenterY, depth + 1); // 从圆圈左侧开始
+				this.renderRadialMindMapChildrenLeft(child.children, linesGroup, nodesGroup, nodeX, childCenterY, depth + 1); // 从节点框左边缘开始
 			}
 
 			currentY += childHeight + verticalGap;
@@ -2327,6 +2158,87 @@ class MindMapRenderer extends MarkdownRenderChild {
 			}
 		}
 		return Math.max(28, totalHeight);
+	}
+
+	// XMind 风格的圆圈交互组件
+	private createXMindCircle(
+		group: SVGGElement,
+		circleX: number,
+		circleY: number,
+		nodeRadius: number,
+		lineColor: string,
+		childCount: number,
+		isCollapsed: boolean,
+		onClick: (e: MouseEvent) => void
+	) {
+		// 创建圆圈容器组
+		const circleGroup = group.createSvg('g') as SVGGElement;
+		
+		// 默认隐藏，收缩时始终显示
+		if (!isCollapsed) {
+			circleGroup.style.opacity = '0';
+			circleGroup.style.transition = 'opacity 0.15s ease';
+		}
+		
+		// 圆圈背景（遮挡连接线）
+		const circleBg = circleGroup.createSvg('circle');
+		circleBg.setAttribute('cx', circleX.toString());
+		circleBg.setAttribute('cy', circleY.toString());
+		circleBg.setAttribute('r', (nodeRadius + 2).toString());
+		circleBg.setAttribute('fill', this.settings.nodeBackgroundColor);
+		
+		// 圆圈（始终空心）
+		const circle = circleGroup.createSvg('circle');
+		circle.setAttribute('cx', circleX.toString());
+		circle.setAttribute('cy', circleY.toString());
+		circle.setAttribute('r', nodeRadius.toString());
+		circle.setAttribute('fill', this.settings.nodeBackgroundColor);
+		circle.setAttribute('stroke', lineColor);
+		circle.setAttribute('stroke-width', '1.5');
+		circle.style.cursor = 'pointer';
+		
+		// 圆圈内的文本（- 或数字）
+		const indicatorText = circleGroup.createSvg('text');
+		indicatorText.setAttribute('x', circleX.toString());
+		indicatorText.setAttribute('y', (circleY + 3.5).toString());
+		indicatorText.setAttribute('fill', lineColor);
+		indicatorText.setAttribute('font-size', isCollapsed ? '9' : '10');
+		indicatorText.setAttribute('font-weight', '600');
+		indicatorText.setAttribute('font-family', 'system-ui, sans-serif');
+		indicatorText.setAttribute('text-anchor', 'middle');
+		indicatorText.style.cursor = 'pointer';
+		
+		// 展开显示 - 号，收缩显示子节点数量
+		if (isCollapsed) {
+			indicatorText.textContent = childCount.toString();
+		} else {
+			indicatorText.textContent = '−'; // 用 Unicode 减号代替普通 -
+		}
+		
+		// 透明悬停区域（比圆圈大，方便触发）
+		const hoverArea = circleGroup.createSvg('circle');
+		hoverArea.setAttribute('cx', circleX.toString());
+		hoverArea.setAttribute('cy', circleY.toString());
+		hoverArea.setAttribute('r', (nodeRadius + 8).toString());
+		hoverArea.setAttribute('fill', 'transparent');
+		hoverArea.style.cursor = 'pointer';
+		
+		// 悬停事件（仅在展开状态时生效）
+		if (!isCollapsed) {
+			hoverArea.addEventListener('mouseenter', () => {
+				circleGroup.style.opacity = '1';
+			});
+			hoverArea.addEventListener('mouseleave', () => {
+				circleGroup.style.opacity = '0';
+			});
+		}
+		
+		// 点击事件
+		hoverArea.addEventListener('click', onClick);
+		circle.addEventListener('click', onClick);
+		indicatorText.addEventListener('click', onClick);
+		
+		return circleGroup;
 	}
 
 	// 添加备注图标
